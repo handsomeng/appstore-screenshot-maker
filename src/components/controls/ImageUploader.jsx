@@ -1,3 +1,9 @@
+/**
+ * [L3] 图片上传组件
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ * 
+ * 支持多画布模式：上传截图时创建新画布或添加到当前画布
+ */
 import { useCallback, useRef } from 'react'
 import { useCanvasStore } from '../../stores/canvasStore'
 import { useToast } from '../ui/Toast'
@@ -5,11 +11,15 @@ import { validateFileFormat, validateFileSize } from '../../utils/fileValidation
 
 export default function ImageUploader({ className = '' }) {
   const inputRef = useRef(null)
-  const { addScreenshot } = useCanvasStore()
+  const { canvases, activeCanvasIndex, addCanvas, setScreenshot } = useCanvasStore()
   const toast = useToast()
+  
+  const currentCanvas = canvases[activeCanvasIndex]
+  const hasScreenshot = !!currentCanvas?.screenshot
+  const canAddCanvas = canvases.length < 6
 
   const handleFiles = useCallback((files) => {
-    Array.from(files).forEach((file) => {
+    Array.from(files).forEach((file, index) => {
       // 验证文件格式
       if (!validateFileFormat(file.name)) {
         toast.error('仅支持 PNG、JPG、JPEG 格式')
@@ -25,19 +35,34 @@ export default function ImageUploader({ className = '' }) {
       // 读取文件
       const reader = new FileReader()
       reader.onload = (e) => {
-        addScreenshot({
+        const screenshot = {
           imageData: e.target.result,
-          position: { x: 0.5, y: 0.65 }, // 中央偏下
+          position: { x: 0.5, y: 0.65 },
           scale: 1,
-        })
-        toast.success('截图上传成功')
+        }
+        
+        // 如果当前画布没有截图，添加到当前画布
+        // 否则创建新画布
+        if (!hasScreenshot && index === 0) {
+          setScreenshot(screenshot)
+          toast.success('截图已添加到当前画布')
+        } else if (canAddCanvas) {
+          const result = addCanvas(screenshot)
+          if (result.success) {
+            toast.success(`已创建画布 ${result.index + 1}`)
+          } else {
+            toast.error('已达到最大画布数量 (6)')
+          }
+        } else {
+          toast.error('已达到最大画布数量 (6)')
+        }
       }
       reader.onerror = () => {
         toast.error('文件读取失败，请重试')
       }
       reader.readAsDataURL(file)
     })
-  }, [addScreenshot, toast])
+  }, [hasScreenshot, canAddCanvas, setScreenshot, addCanvas, toast])
 
   const handleDrop = useCallback((e) => {
     e.preventDefault()
@@ -62,7 +87,6 @@ export default function ImageUploader({ className = '' }) {
     if (files?.length) {
       handleFiles(files)
     }
-    // 重置 input 以便可以重复上传同一文件
     e.target.value = ''
   }
 
@@ -95,7 +119,15 @@ export default function ImageUploader({ className = '' }) {
         </div>
         <div className="text-center">
           <p className="text-sm font-medium text-surface-700">点击或拖拽上传截图</p>
-          <p className="text-xs text-surface-500 mt-1">支持 PNG、JPG、JPEG，最大 10MB</p>
+          <p className="text-xs text-surface-500 mt-1">
+            {hasScreenshot 
+              ? '上传新截图将创建新画布' 
+              : '上传截图到当前画布'
+            }
+          </p>
+          <p className="text-xs text-surface-400 mt-1">
+            画布 {canvases.length}/6 · 支持 PNG、JPG
+          </p>
         </div>
       </div>
     </div>

@@ -1,6 +1,14 @@
+/**
+ * [L3] Konva 画布渲染组件
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ * 
+ * 核心职责：渲染当前画布的背景、截图、文字图层
+ */
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { Stage, Layer, Rect, Text, Image, Transformer } from 'react-konva'
 import { useCanvasStore } from '../../stores/canvasStore'
+import { shouldTriggerSync, SyncPropertyType } from '../../utils/syncManager'
+import ResizeHandles from './ResizeHandles'
 
 // 可编辑文字组件
 function EditableText({ layer, isSelected, onSelect, onChange, canvasSize }) {
@@ -54,12 +62,8 @@ function EditableText({ layer, isSelected, onSelect, onChange, canvasSize }) {
 
     textarea.addEventListener('blur', handleBlur)
     textarea.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        textarea.blur()
-      }
-      if (e.key === 'Escape') {
-        textarea.blur()
-      }
+      if (e.key === 'Enter' && !e.shiftKey) textarea.blur()
+      if (e.key === 'Escape') textarea.blur()
     })
   }
 
@@ -74,8 +78,6 @@ function EditableText({ layer, isSelected, onSelect, onChange, canvasSize }) {
         fontFamily={layer.fontFamily}
         fill={layer.color}
         align={layer.align}
-        offsetX={0}
-        offsetY={0}
         draggable
         visible={!isEditing}
         onClick={onSelect}
@@ -92,9 +94,7 @@ function EditableText({ layer, isSelected, onSelect, onChange, canvasSize }) {
         }}
         onTransformEnd={() => {
           const node = textRef.current
-          onChange({
-            fontSize: Math.round(layer.fontSize * node.scaleY()),
-          })
+          onChange({ fontSize: Math.round(layer.fontSize * node.scaleY()) })
           node.scaleX(1)
           node.scaleY(1)
         }}
@@ -103,12 +103,7 @@ function EditableText({ layer, isSelected, onSelect, onChange, canvasSize }) {
         <Transformer
           ref={trRef}
           enabledAnchors={['middle-left', 'middle-right']}
-          boundBoxFunc={(oldBox, newBox) => {
-            if (newBox.width < 20) {
-              return oldBox
-            }
-            return newBox
-          }}
+          boundBoxFunc={(oldBox, newBox) => newBox.width < 20 ? oldBox : newBox}
         />
       )}
     </>
@@ -165,9 +160,7 @@ function DraggableImage({ screenshot, isSelected, onSelect, onChange, canvasSize
         }}
         onTransformEnd={() => {
           const node = imageRef.current
-          onChange({
-            scale: screenshot.scale * node.scaleX() / scale,
-          })
+          onChange({ scale: screenshot.scale * node.scaleX() / scale })
           node.scaleX(scale)
           node.scaleY(scale)
         }}
@@ -176,29 +169,27 @@ function DraggableImage({ screenshot, isSelected, onSelect, onChange, canvasSize
         <Transformer
           ref={trRef}
           keepRatio={true}
-          boundBoxFunc={(oldBox, newBox) => {
-            if (newBox.width < 20 || newBox.height < 20) {
-              return oldBox
-            }
-            return newBox
-          }}
+          boundBoxFunc={(oldBox, newBox) => 
+            (newBox.width < 20 || newBox.height < 20) ? oldBox : newBox
+          }
         />
       )}
     </>
   )
 }
 
+
 export default function KonvaCanvas() {
   const containerRef = useRef(null)
   const stageRef = useRef(null)
   const [displayScale, setDisplayScale] = useState(1)
   const [selectedId, setSelectedId] = useState(null)
+  const [showResizeHandles, setShowResizeHandles] = useState(false)
 
   const {
-    background,
-    screenshots,
-    textLayers,
-    canvasSize,
+    canvases,
+    activeCanvasIndex,
+    syncSettings,
     updateScreenshot,
     updateTextLayer,
     setActiveScreenshot,
@@ -206,24 +197,26 @@ export default function KonvaCanvas() {
     toggleTextLayerSelection,
     clearTextLayerSelection,
     selectedTextLayerIds,
+    setCanvasSize,
+    setPendingSync,
   } = useCanvasStore()
 
-  // 响应容器尺寸变化，只调整显示缩放比例
+  // 获取当前画布
+  const currentCanvas = canvases[activeCanvasIndex]
+  const { background, screenshot, textLayers, canvasSize } = currentCanvas
+  const isMaster = activeCanvasIndex === 0
+
+  // 响应容器尺寸变化
   useEffect(() => {
     const updateScale = () => {
       if (!containerRef.current) return
-
       const container = containerRef.current
       const padding = 60
       const maxWidth = container.clientWidth - padding * 2
       const maxHeight = container.clientHeight - padding * 2
-
-      // 计算适合容器的缩放比例
       const scaleX = maxWidth / canvasSize.width
       const scaleY = maxHeight / canvasSize.height
-      const scale = Math.min(scaleX, scaleY, 1) // 最大不超过 1
-
-      setDisplayScale(scale)
+      setDisplayScale(Math.min(scaleX, scaleY, 1))
     }
 
     updateScale()
@@ -238,13 +231,14 @@ export default function KonvaCanvas() {
         setSelectedId(null)
         clearTextLayerSelection()
         setActiveScreenshot(null)
+        setShowResizeHandles(false)
       }
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [clearTextLayerSelection, setActiveScreenshot])
 
-  // 点击空白处取消选中
+  // 点击空白处
   const handleStageClick = (e) => {
     if (e.target === e.target.getStage()) {
       setSelectedId(null)
@@ -253,12 +247,26 @@ export default function KonvaCanvas() {
     }
   }
 
+  // 处理同步逻辑
+  const handleSyncCheck = useCallback((property, value) => {
+    if (!isMaster) return // Slave 不触发同步
+    
+    const { batchMode, rememberChoice } = syncSettings
+    const propertyType = property.split('.')[0]
+    const result = shouldTriggerSync(activeCanvasIndex, batchMode, rememberChoice[propertyType])
+    
+    if (result.autoSync) {
+      // 自动同步
+      useCanvasStore.getState().syncToSlaves(property, value)
+    } else if (result.showConfirm) {
+      // 显示确认弹窗
+      setPendingSync({ property, value, propertyType })
+    }
+  }, [isMaster, syncSettings, activeCanvasIndex, setPendingSync])
+
   // 获取背景填充
   const getBackgroundFill = useCallback(() => {
-    if (background.type === 'solid') {
-      return background.color
-    }
-    return '#ffffff'
+    return background.type === 'solid' ? background.color : '#ffffff'
   }, [background])
 
   // 暴露 stage 给导出功能
@@ -270,14 +278,27 @@ export default function KonvaCanvas() {
     <div
       ref={containerRef}
       className="flex-1 flex items-center justify-center bg-surface-50 overflow-hidden p-8"
+      onMouseEnter={() => setShowResizeHandles(true)}
+      onMouseLeave={() => setShowResizeHandles(false)}
     >
       <div 
-        className="bg-white rounded-lg shadow-xl overflow-hidden"
+        className="relative bg-white rounded-lg shadow-xl overflow-visible"
         style={{
           transform: `scale(${displayScale})`,
           transformOrigin: 'center center',
         }}
       >
+        {/* 画布尺寸调整手柄 */}
+        {showResizeHandles && (
+          <ResizeHandles
+            width={canvasSize.width}
+            height={canvasSize.height}
+            scale={displayScale}
+            onResize={(w, h) => setCanvasSize(w, h)}
+            onResizeEnd={() => handleSyncCheck(SyncPropertyType.CANVAS_SIZE, { width: canvasSize.width, height: canvasSize.height })}
+          />
+        )}
+        
         <Stage
           ref={stageRef}
           width={canvasSize.width}
@@ -316,9 +337,8 @@ export default function KonvaCanvas() {
             )}
 
             {/* 截图 */}
-            {screenshots.map((screenshot) => (
+            {screenshot && (
               <DraggableImage
-                key={screenshot.id}
                 screenshot={screenshot}
                 isSelected={selectedId === screenshot.id}
                 canvasSize={canvasSize}
@@ -327,12 +347,20 @@ export default function KonvaCanvas() {
                   setActiveScreenshot(screenshot.id)
                   setActiveTextLayer(null)
                 }}
-                onChange={(updates) => updateScreenshot(screenshot.id, updates)}
+                onChange={(updates) => {
+                  updateScreenshot(updates)
+                  if (updates.position || updates.scale) {
+                    handleSyncCheck(SyncPropertyType.SCREENSHOT_POSITION, {
+                      position: updates.position || screenshot.position,
+                      scale: updates.scale || screenshot.scale,
+                    })
+                  }
+                }}
               />
-            ))}
+            )}
 
             {/* 文字图层 */}
-            {textLayers.map((layer) => (
+            {textLayers.map((layer, layerIndex) => (
               <EditableText
                 key={layer.id}
                 layer={layer}
@@ -344,11 +372,29 @@ export default function KonvaCanvas() {
                   toggleTextLayerSelection(layer.id, isMultiSelect)
                   setActiveScreenshot(null)
                 }}
-                onChange={(updates) => updateTextLayer(layer.id, updates)}
+                onChange={(updates) => {
+                  updateTextLayer(layer.id, updates)
+                  if (updates.position || updates.fontSize || updates.color || updates.fontFamily) {
+                    handleSyncCheck(SyncPropertyType.TEXT_STYLE, { layerIndex, style: updates })
+                  }
+                  if (updates.text !== undefined) {
+                    handleSyncCheck(SyncPropertyType.TEXT_CONTENT, { 
+                      layerIndex, 
+                      placeholderText: '哈'.repeat(updates.text.length) 
+                    })
+                  }
+                }}
               />
             ))}
           </Layer>
         </Stage>
+        
+        {/* Master 标识 */}
+        {isMaster && (
+          <div className="absolute -top-6 left-0 px-2 py-1 bg-blue-500 text-white text-xs rounded">
+            模板画布
+          </div>
+        )}
       </div>
     </div>
   )

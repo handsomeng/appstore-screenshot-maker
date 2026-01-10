@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { useCanvasStore } from '../../stores/canvasStore'
-import { Input } from '../ui'
 
 const CANVAS_PRESETS = [
   { id: 'iphone-6.7', name: 'iPhone 6.7"', width: 430, height: 932 },
@@ -8,91 +7,111 @@ const CANVAS_PRESETS = [
   { id: 'iphone-5.5', name: 'iPhone 5.5"', width: 414, height: 736 },
   { id: 'ipad-12.9', name: 'iPad 12.9"', width: 512, height: 683 },
   { id: 'ipad-11', name: 'iPad 11"', width: 417, height: 597 },
-  { id: 'square', name: '正方形', width: 500, height: 500 },
-  { id: 'custom', name: '自定义', width: 0, height: 0 },
 ]
 
 export default function CanvasSizeSelector({ className = '' }) {
-  const { canvasSize, setCanvasSize } = useCanvasStore()
-  const [selectedPreset, setSelectedPreset] = useState('iphone-6.7')
-  const [customWidth, setCustomWidth] = useState(canvasSize.width)
-  const [customHeight, setCustomHeight] = useState(canvasSize.height)
+  const { canvases, activeCanvasIndex, updateCanvas } = useCanvasStore()
+  const currentCanvas = canvases[activeCanvasIndex]
+  const canvasSize = currentCanvas?.canvasSize || { width: 430, height: 932 }
+  
+  const [showCustom, setShowCustom] = useState(false)
+  const [customW, setCustomW] = useState(canvasSize.width)
+  const [customH, setCustomH] = useState(canvasSize.height)
 
-  const handlePresetChange = (presetId) => {
-    setSelectedPreset(presetId)
-    const preset = CANVAS_PRESETS.find(p => p.id === presetId)
-    if (preset && preset.id !== 'custom') {
-      setCanvasSize({ width: preset.width, height: preset.height })
-      setCustomWidth(preset.width)
-      setCustomHeight(preset.height)
-    }
+  const setCanvasSize = (size) => {
+    updateCanvas(activeCanvasIndex, { canvasSize: size })
   }
 
-  const handleCustomSizeChange = () => {
-    const width = Math.max(100, Math.min(1000, customWidth))
-    const height = Math.max(100, Math.min(2000, customHeight))
-    setCanvasSize({ width, height })
+  const handlePresetClick = (preset) => {
+    setCanvasSize({ width: preset.width, height: preset.height })
+    setShowCustom(false)
   }
+
+  const handleCustomApply = () => {
+    const w = Math.max(100, Math.min(1000, customW))
+    const h = Math.max(100, Math.min(2000, customH))
+    setCanvasSize({ width: w, height: h })
+  }
+
+  // 判断当前是否匹配某个预设
+  const currentPresetId = CANVAS_PRESETS.find(
+    p => p.width === canvasSize.width && p.height === canvasSize.height
+  )?.id
 
   return (
-    <div className={`space-y-3 ${className}`}>
-      <select
-        value={selectedPreset}
-        onChange={(e) => handlePresetChange(e.target.value)}
-        className="
-          w-full px-3 py-2 text-sm
-          bg-white border border-surface-200 rounded-lg
-          focus:outline-none focus:ring-2 focus:ring-primary-500
-        "
-      >
+    <div className={`space-y-1 ${className}`}>
+      {/* 预设列表 - 紧凑显示 */}
+      <div className="space-y-0.5">
         {CANVAS_PRESETS.map((preset) => (
-          <option key={preset.id} value={preset.id}>
-            {preset.name} {preset.width > 0 && `(${preset.width}×${preset.height})`}
-          </option>
+          <button
+            key={preset.id}
+            onClick={() => handlePresetClick(preset)}
+            className={`
+              w-full px-2 py-1 text-xs text-left rounded transition-colors
+              flex justify-between items-center
+              ${currentPresetId === preset.id 
+                ? 'bg-primary-100 text-primary-700' 
+                : 'hover:bg-surface-100 text-surface-600'
+              }
+            `}
+          >
+            <span>{preset.name}</span>
+            <span className="text-surface-400 font-mono">{preset.width}×{preset.height}</span>
+          </button>
         ))}
-      </select>
+        
+        {/* 自定义选项 */}
+        <button
+          onClick={() => setShowCustom(!showCustom)}
+          className={`
+            w-full px-2 py-1 text-xs text-left rounded transition-colors
+            flex justify-between items-center
+            ${showCustom || !currentPresetId
+              ? 'bg-primary-100 text-primary-700' 
+              : 'hover:bg-surface-100 text-surface-600'
+            }
+          `}
+        >
+          <span>自定义</span>
+          <span className="text-surface-400">{showCustom ? '▼' : '▶'}</span>
+        </button>
+      </div>
 
-      {selectedPreset === 'custom' && (
-        <div className="flex gap-2 items-end">
-          <div className="flex-1">
-            <label className="text-xs text-surface-500 mb-1 block">宽</label>
-            <input
-              type="number"
-              value={customWidth}
-              onChange={(e) => setCustomWidth(parseInt(e.target.value) || 100)}
-              onBlur={handleCustomSizeChange}
-              min={100}
-              max={1000}
-              className="
-                w-full px-2 py-1.5 text-sm
-                border border-surface-200 rounded
-                focus:outline-none focus:ring-2 focus:ring-primary-500
-              "
-            />
-          </div>
-          <span className="text-surface-400 pb-2">×</span>
-          <div className="flex-1">
-            <label className="text-xs text-surface-500 mb-1 block">高</label>
-            <input
-              type="number"
-              value={customHeight}
-              onChange={(e) => setCustomHeight(parseInt(e.target.value) || 100)}
-              onBlur={handleCustomSizeChange}
-              min={100}
-              max={2000}
-              className="
-                w-full px-2 py-1.5 text-sm
-                border border-surface-200 rounded
-                focus:outline-none focus:ring-2 focus:ring-primary-500
-              "
-            />
-          </div>
+      {/* 自定义输入 */}
+      {showCustom && (
+        <div className="flex gap-1 items-center pt-1">
+          <input
+            type="number"
+            value={customW}
+            onChange={(e) => setCustomW(parseInt(e.target.value) || 100)}
+            className="w-16 px-1.5 py-0.5 text-xs border border-surface-200 rounded focus:outline-none focus:ring-1 focus:ring-primary-500"
+            min={100}
+            max={1000}
+          />
+          <span className="text-surface-400 text-xs">×</span>
+          <input
+            type="number"
+            value={customH}
+            onChange={(e) => setCustomH(parseInt(e.target.value) || 100)}
+            className="w-16 px-1.5 py-0.5 text-xs border border-surface-200 rounded focus:outline-none focus:ring-1 focus:ring-primary-500"
+            min={100}
+            max={2000}
+          />
+          <button
+            onClick={handleCustomApply}
+            className="px-2 py-0.5 text-xs bg-primary-500 text-white rounded hover:bg-primary-600"
+          >
+            应用
+          </button>
         </div>
       )}
 
-      <div className="text-xs text-surface-500">
-        当前: {canvasSize.width} × {canvasSize.height}
-      </div>
+      {/* 当前尺寸（如果不匹配任何预设） */}
+      {!currentPresetId && !showCustom && (
+        <div className="text-xs text-surface-400 px-2">
+          当前: {canvasSize.width}×{canvasSize.height}
+        </div>
+      )}
     </div>
   )
 }

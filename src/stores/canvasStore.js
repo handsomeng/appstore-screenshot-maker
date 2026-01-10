@@ -1,113 +1,262 @@
+/**
+ * [L3] 多画布状态管理
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ * 
+ * 核心职责：
+ * - 管理多画布状态 (最多 6 个)
+ * - Master/Slave 模式同步
+ * - 同步设置持久化
+ */
 import { create } from 'zustand'
 
-const initialState = {
-  // 截图列表
-  screenshots: [],
-  activeScreenshotId: null,
-  
-  // 设备框架
-  deviceFrame: null,
-  
-  // 画布尺寸
-  canvasSize: { width: 430, height: 932 },
-  
-  // 背景配置
+// 最大画布数量
+const MAX_CANVASES = 6
+// 最小画布尺寸
+const MIN_CANVAS_SIZE = 200
+
+// 创建单个画布的初始状态
+const createCanvasState = (index) => ({
+  id: `canvas-${Date.now()}-${index}`,
+  index,
+  screenshot: null,
   background: {
     type: 'solid',
     color: '#ffffff',
     gradient: null,
   },
-  
-  // 文字图层
   textLayers: [],
-  activeTextLayerId: null,
-  selectedTextLayerIds: [], // 多选支持
+  canvasSize: { width: 430, height: 932 },
+})
+
+// 初始状态
+const initialState = {
+  // 多画布列表
+  canvases: [createCanvasState(0)],
+  activeCanvasIndex: 0,
+  
+  // 同步设置
+  syncSettings: {
+    batchMode: true,  // 默认开启实时同步
+    rememberChoice: {
+      background: null,
+      textStyle: null,
+      textContent: null,
+      position: null,
+      canvasSize: null,
+    },
+  },
+  
+  // 待处理的同步请求
+  pendingSync: null,
   
   // 导出设置
   exportSettings: {
-    preset: 'iphone-6.7',
-    width: 1290,
-    height: 2796,
     format: 'png',
     quality: 0.9,
   },
   
-  // 多画布管理
-  canvases: [{ id: 'canvas-1', name: '画布 1' }],
-  activeCanvasId: 'canvas-1',
+  // 当前选中的元素
+  activeScreenshotId: null,
+  activeTextLayerId: null,
+  selectedTextLayerIds: [],
 }
 
 export const useCanvasStore = create((set, get) => ({
   ...initialState,
 
-  // 截图操作
-  addScreenshot: (screenshot) => set((state) => ({
-    screenshots: [...state.screenshots, {
-      id: `screenshot-${Date.now()}`,
-      imageData: screenshot.imageData,
-      position: screenshot.position || { x: 0.5, y: 0.65 },
-      scale: screenshot.scale || 1,
-    }],
-  })),
+  // ========== 画布 CRUD 操作 ==========
+  
+  // 添加画布 (上传截图时调用)
+  addCanvas: (screenshot = null) => {
+    const state = get()
+    if (state.canvases.length >= MAX_CANVASES) {
+      return { success: false, reason: 'max_reached' }
+    }
+    
+    const newIndex = state.canvases.length
+    const newCanvas = createCanvasState(newIndex)
+    
+    if (screenshot) {
+      newCanvas.screenshot = {
+        id: `screenshot-${Date.now()}`,
+        imageData: screenshot.imageData,
+        position: screenshot.position || { x: 0.5, y: 0.65 },
+        scale: screenshot.scale || 1,
+      }
+    }
+    
+    set({
+      canvases: [...state.canvases, newCanvas],
+      // 不自动切换到新画布，保持当前选中
+    })
+    
+    return { success: true, index: newIndex }
+  },
 
-  removeScreenshot: (id) => set((state) => ({
-    screenshots: state.screenshots.filter(s => s.id !== id),
-    activeScreenshotId: state.activeScreenshotId === id ? null : state.activeScreenshotId,
-  })),
+  // 删除画布
+  removeCanvas: (index) => {
+    const state = get()
+    if (state.canvases.length <= 1) {
+      return { success: false, reason: 'min_reached' }
+    }
+    
+    const newCanvases = state.canvases
+      .filter((_, i) => i !== index)
+      .map((canvas, i) => ({ ...canvas, index: i })) // 重新索引
+    
+    const newActiveIndex = state.activeCanvasIndex >= newCanvases.length
+      ? newCanvases.length - 1
+      : state.activeCanvasIndex > index
+        ? state.activeCanvasIndex - 1
+        : state.activeCanvasIndex
+    
+    set({
+      canvases: newCanvases,
+      activeCanvasIndex: newActiveIndex,
+    })
+    
+    return { success: true }
+  },
 
-  setActiveScreenshot: (id) => set({ activeScreenshotId: id }),
+  // 切换当前画布
+  setActiveCanvas: (index) => {
+    const state = get()
+    if (index >= 0 && index < state.canvases.length) {
+      set({ 
+        activeCanvasIndex: index,
+        activeScreenshotId: null,
+        activeTextLayerId: null,
+        selectedTextLayerIds: [],
+      })
+    }
+  },
 
-  updateScreenshot: (id, updates) => set((state) => ({
-    screenshots: state.screenshots.map(s => 
-      s.id === id ? { ...s, ...updates } : s
+  // 获取当前画布
+  getActiveCanvas: () => {
+    const state = get()
+    return state.canvases[state.activeCanvasIndex]
+  },
+
+  // 判断是否为 Master 画布
+  isMasterCanvas: () => get().activeCanvasIndex === 0,
+
+  // ========== 画布属性更新 ==========
+
+  // 更新指定画布
+  updateCanvas: (index, updates) => set((state) => ({
+    canvases: state.canvases.map((canvas, i) =>
+      i === index ? { ...canvas, ...updates } : canvas
     ),
   })),
 
-  // 设备框架操作
-  setDeviceFrame: (frame) => set({ deviceFrame: frame }),
+  // 更新当前画布
+  updateActiveCanvas: (updates) => {
+    const state = get()
+    get().updateCanvas(state.activeCanvasIndex, updates)
+  },
 
-  // 画布尺寸操作
-  setCanvasSize: (size) => set({ canvasSize: size }),
+  // ========== 背景操作 ==========
+  
+  setBackgroundColor: (color) => {
+    const state = get()
+    const newBackground = { type: 'solid', color, gradient: null }
+    get().updateCanvas(state.activeCanvasIndex, { background: newBackground })
+  },
 
-  // 背景操作
-  updateBackground: (background) => set((state) => ({
-    background: { ...state.background, ...background },
-  })),
+  setBackgroundGradient: (gradient) => {
+    const state = get()
+    const newBackground = { type: 'gradient', color: '#ffffff', gradient }
+    get().updateCanvas(state.activeCanvasIndex, { background: newBackground })
+  },
 
-  setBackgroundColor: (color) => set((state) => ({
-    background: { ...state.background, type: 'solid', color },
-  })),
+  // ========== 画布尺寸操作 ==========
+  
+  setCanvasSize: (width, height) => {
+    const state = get()
+    const clampedWidth = Math.max(MIN_CANVAS_SIZE, width)
+    const clampedHeight = Math.max(MIN_CANVAS_SIZE, height)
+    get().updateCanvas(state.activeCanvasIndex, {
+      canvasSize: { width: clampedWidth, height: clampedHeight },
+    })
+  },
 
-  setBackgroundGradient: (gradient) => set((state) => ({
-    background: { ...state.background, type: 'gradient', gradient },
-  })),
+  // ========== 截图操作 ==========
+  
+  setScreenshot: (screenshot) => {
+    const state = get()
+    get().updateCanvas(state.activeCanvasIndex, {
+      screenshot: screenshot ? {
+        id: `screenshot-${Date.now()}`,
+        imageData: screenshot.imageData,
+        position: screenshot.position || { x: 0.5, y: 0.65 },
+        scale: screenshot.scale || 1,
+      } : null,
+    })
+  },
 
-  // 文字图层操作
+  updateScreenshot: (updates) => {
+    const state = get()
+    const canvas = state.canvases[state.activeCanvasIndex]
+    if (!canvas.screenshot) return
+    
+    get().updateCanvas(state.activeCanvasIndex, {
+      screenshot: { ...canvas.screenshot, ...updates },
+    })
+  },
+
+  setActiveScreenshot: (id) => set({ activeScreenshotId: id }),
+
+  // ========== 文字图层操作 ==========
+  
   addTextLayer: (text = '双击编辑文字') => {
+    const state = get()
+    const canvas = state.canvases[state.activeCanvasIndex]
     const id = `text-${Date.now()}`
-    set((state) => ({
-      textLayers: [...state.textLayers, {
-        id,
-        text,
-        position: { x: 0.5, y: 0.2 },
-        fontFamily: 'system-ui',
-        fontSize: 32,
-        color: '#000000',
-        align: 'center',
-      }],
-      activeTextLayerId: id,
-    }))
+    
+    const newLayer = {
+      id,
+      text,
+      position: { x: 0.5, y: 0.2 },
+      fontFamily: 'system-ui',
+      fontSize: 32,
+      color: '#000000',
+      align: 'center',
+    }
+    
+    get().updateCanvas(state.activeCanvasIndex, {
+      textLayers: [...canvas.textLayers, newLayer],
+    })
+    
+    set({ activeTextLayerId: id })
     return id
   },
 
-  removeTextLayer: (id) => set((state) => ({
-    textLayers: state.textLayers.filter(t => t.id !== id),
-    activeTextLayerId: state.activeTextLayerId === id ? null : state.activeTextLayerId,
-  })),
+  removeTextLayer: (id) => {
+    const state = get()
+    const canvas = state.canvases[state.activeCanvasIndex]
+    
+    get().updateCanvas(state.activeCanvasIndex, {
+      textLayers: canvas.textLayers.filter(t => t.id !== id),
+    })
+    
+    if (state.activeTextLayerId === id) {
+      set({ activeTextLayerId: null })
+    }
+  },
+
+  updateTextLayer: (id, updates) => {
+    const state = get()
+    const canvas = state.canvases[state.activeCanvasIndex]
+    
+    get().updateCanvas(state.activeCanvasIndex, {
+      textLayers: canvas.textLayers.map(t =>
+        t.id === id ? { ...t, ...updates } : t
+      ),
+    })
+  },
 
   setActiveTextLayer: (id) => set({ activeTextLayerId: id }),
 
-  // 多选文字图层
   toggleTextLayerSelection: (id, isMultiSelect) => set((state) => {
     if (isMultiSelect) {
       const isSelected = state.selectedTextLayerIds.includes(id)
@@ -124,68 +273,128 @@ export const useCanvasStore = create((set, get) => ({
     }
   }),
 
-  clearTextLayerSelection: () => set({ selectedTextLayerIds: [], activeTextLayerId: null }),
+  clearTextLayerSelection: () => set({ 
+    selectedTextLayerIds: [], 
+    activeTextLayerId: null 
+  }),
 
-  // 批量更新选中的文字图层
-  updateSelectedTextLayers: (updates) => set((state) => ({
-    textLayers: state.textLayers.map(t =>
-      state.selectedTextLayerIds.includes(t.id) ? { ...t, ...updates } : t
-    ),
+  // ========== 同步操作 ==========
+  
+  // 设置待处理的同步请求
+  setPendingSync: (syncRequest) => set({ pendingSync: syncRequest }),
+  
+  // 清除待处理的同步请求
+  clearPendingSync: () => set({ pendingSync: null }),
+
+  // 同步到所有 Slave 画布
+  syncToSlaves: (property, value) => {
+    const state = get()
+    const newCanvases = state.canvases.map((canvas, index) => {
+      if (index === 0) return canvas // Master 不变
+      
+      switch (property) {
+        case 'background':
+          return { ...canvas, background: value }
+        case 'canvasSize':
+          return { ...canvas, canvasSize: value }
+        case 'screenshot.position':
+          if (!canvas.screenshot) return canvas
+          return {
+            ...canvas,
+            screenshot: { ...canvas.screenshot, position: value.position, scale: value.scale },
+          }
+        case 'textLayer.add':
+          return {
+            ...canvas,
+            textLayers: [...canvas.textLayers, { ...value, id: `text-${Date.now()}-${index}` }],
+          }
+        case 'textLayer.style':
+          return {
+            ...canvas,
+            textLayers: canvas.textLayers.map((t, i) =>
+              i === value.layerIndex ? { ...t, ...value.style } : t
+            ),
+          }
+        case 'textLayer.content':
+          return {
+            ...canvas,
+            textLayers: canvas.textLayers.map((t, i) =>
+              i === value.layerIndex ? { ...t, text: value.placeholderText } : t
+            ),
+          }
+        case 'textLayer.delete':
+          return {
+            ...canvas,
+            textLayers: canvas.textLayers.filter((_, i) => i !== value.layerIndex),
+          }
+        default:
+          return canvas
+      }
+    })
+    
+    set({ canvases: newCanvases })
+  },
+
+  // 更新同步设置
+  updateSyncSettings: (updates) => set((state) => ({
+    syncSettings: { ...state.syncSettings, ...updates },
   })),
 
-  updateTextLayer: (id, updates) => set((state) => ({
-    textLayers: state.textLayers.map(t => 
-      t.id === id ? { ...t, ...updates } : t
-    ),
+  // 设置记住的选择
+  setRememberChoice: (property, choice) => set((state) => ({
+    syncSettings: {
+      ...state.syncSettings,
+      rememberChoice: {
+        ...state.syncSettings.rememberChoice,
+        [property]: choice,
+      },
+    },
   })),
 
-  // 导出设置操作
+  // 切换批量模式
+  toggleBatchMode: () => set((state) => ({
+    syncSettings: {
+      ...state.syncSettings,
+      batchMode: !state.syncSettings.batchMode,
+    },
+  })),
+
+  // ========== 导出操作 ==========
+  
   updateExportSettings: (settings) => set((state) => ({
     exportSettings: { ...state.exportSettings, ...settings },
   })),
 
-  // 多画布操作
-  addCanvas: () => {
-    const id = `canvas-${Date.now()}`
-    set((state) => ({
-      canvases: [...state.canvases, { id, name: `画布 ${state.canvases.length + 1}` }],
-      activeCanvasId: id,
-    }))
-    return id
-  },
-
-  removeCanvas: (id) => set((state) => {
-    if (state.canvases.length <= 1) return state
-    const newCanvases = state.canvases.filter(c => c.id !== id)
-    return {
-      canvases: newCanvases,
-      activeCanvasId: state.activeCanvasId === id ? newCanvases[0].id : state.activeCanvasId,
-    }
-  }),
-
-  setActiveCanvas: (id) => set({ activeCanvasId: id }),
-
-  // 重置状态
-  reset: () => set(initialState),
-
-  // 导出状态（用于保存项目）
+  // 导出状态 (用于保存项目)
   exportState: () => {
     const state = get()
     return {
-      screenshots: state.screenshots,
-      deviceFrame: state.deviceFrame,
-      background: state.background,
-      textLayers: state.textLayers,
+      canvases: state.canvases,
+      syncSettings: state.syncSettings,
       exportSettings: state.exportSettings,
     }
   },
 
-  // 导入状态（用于恢复项目）
+  // 导入状态 (用于恢复项目)
   importState: (data) => set({
-    screenshots: data.screenshots || [],
-    deviceFrame: data.deviceFrame || null,
-    background: data.background || initialState.background,
-    textLayers: data.textLayers || [],
+    canvases: data.canvases || [createCanvasState(0)],
+    activeCanvasIndex: 0,
+    syncSettings: data.syncSettings || initialState.syncSettings,
     exportSettings: data.exportSettings || initialState.exportSettings,
   }),
+
+  // 重置状态
+  reset: () => set(initialState),
 }))
+
+// 兼容旧 API 的 getter
+export const getCanvasState = () => {
+  const state = useCanvasStore.getState()
+  const canvas = state.canvases[state.activeCanvasIndex]
+  return {
+    background: canvas.background,
+    screenshots: canvas.screenshot ? [canvas.screenshot] : [],
+    textLayers: canvas.textLayers,
+    canvasSize: canvas.canvasSize,
+  }
+}

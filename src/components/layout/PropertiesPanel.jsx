@@ -1,11 +1,13 @@
 import { useCanvasStore } from '../../stores/canvasStore'
-import { Tabs, Slider, ColorPicker, Button, IconButton } from '../ui'
+import { Tabs } from '../ui'
 import BackgroundEditor from '../controls/BackgroundEditor'
 import TextEditor from '../controls/TextEditor'
 import ExportPanel from '../controls/ExportPanel'
 
 export default function PropertiesPanel() {
-  const { textLayers, activeTextLayerId } = useCanvasStore()
+  const { canvases, activeCanvasIndex, activeTextLayerId } = useCanvasStore()
+  const currentCanvas = canvases[activeCanvasIndex]
+  const textLayers = currentCanvas?.textLayers || []
   const activeTextLayer = textLayers.find(t => t.id === activeTextLayerId)
 
   const tabs = [

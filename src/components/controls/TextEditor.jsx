@@ -1,31 +1,23 @@
+/**
+ * [L3] 文字编辑器
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ * 
+ * 支持多选批量修改样式
+ */
 import { useCanvasStore } from '../../stores/canvasStore'
-import { Slider, ColorPicker, Button, IconButton } from '../ui'
+import { Slider, ColorPicker, IconButton } from '../ui'
 import { clampFontSize } from '../../utils/textUtils'
 
 const FONT_OPTIONS = [
-  // 系统字体
   { value: 'system-ui', label: '系统字体', category: '系统' },
-  
-  // 中文字体 - Google Fonts 免费商用
   { value: '"Noto Sans SC"', label: '思源黑体', category: '中文' },
   { value: '"Noto Serif SC"', label: '思源宋体', category: '中文' },
   { value: '"ZCOOL KuaiLe"', label: '站酷快乐体', category: '中文艺术' },
   { value: '"ZCOOL QingKe HuangYou"', label: '站酷庆科黄油体', category: '中文艺术' },
-  { value: '"ZCOOL XiaoWei"', label: '站酷小薇体', category: '中文艺术' },
   { value: '"Ma Shan Zheng"', label: '马善政楷体', category: '中文艺术' },
-  { value: '"Liu Jian Mao Cao"', label: '流江毛草', category: '中文艺术' },
-  { value: '"Long Cang"', label: '龙藏体', category: '中文艺术' },
-  { value: '"Zhi Mang Xing"', label: '志莽行书', category: '中文艺术' },
-  
-  // 英文字体 - Google Fonts 免费商用
-  { value: 'Poppins', label: 'Poppins', category: '英文现代' },
-  { value: 'Montserrat', label: 'Montserrat', category: '英文现代' },
-  { value: '"Playfair Display"', label: 'Playfair Display', category: '英文优雅' },
-  { value: '"Bebas Neue"', label: 'Bebas Neue', category: '英文标题' },
-  { value: 'Righteous', label: 'Righteous', category: '英文标题' },
-  { value: 'Pacifico', label: 'Pacifico', category: '英文手写' },
-  { value: '"Permanent Marker"', label: 'Permanent Marker', category: '英文手写' },
-  { value: 'Bangers', label: 'Bangers', category: '英文趣味' },
+  { value: 'Poppins', label: 'Poppins', category: '英文' },
+  { value: 'Montserrat', label: 'Montserrat', category: '英文' },
+  { value: '"Playfair Display"', label: 'Playfair Display', category: '英文' },
 ]
 
 const ALIGN_OPTIONS = [
@@ -36,45 +28,72 @@ const ALIGN_OPTIONS = [
 
 export default function TextEditor({ className = '' }) {
   const { 
-    textLayers, 
+    canvases,
+    activeCanvasIndex,
     activeTextLayerId, 
     selectedTextLayerIds,
     updateTextLayer, 
-    updateSelectedTextLayers,
     removeTextLayer,
-    setActiveTextLayer,
     toggleTextLayerSelection,
-    clearTextLayerSelection,
+    updateCanvas,
+    syncSettings,
+    syncToSlaves,
   } = useCanvasStore()
 
-  const activeLayer = textLayers.find(t => t.id === activeTextLayerId)
-  const hasMultipleSelected = selectedTextLayerIds.length > 1
+  const currentCanvas = canvases[activeCanvasIndex]
+  const textLayers = currentCanvas?.textLayers || []
+  const isMaster = activeCanvasIndex === 0
+  
+  // 获取当前画布中被选中的文字图层
+  const currentCanvasTextIds = textLayers.map(t => t.id)
+  const selectedInCurrentCanvas = selectedTextLayerIds.filter(id => currentCanvasTextIds.includes(id))
+  const selectedLayers = textLayers.filter(t => selectedInCurrentCanvas.includes(t.id))
+  
+  // 获取活动图层（优先用 activeTextLayerId，否则用选中的第一个）
+  const activeLayer = textLayers.find(t => t.id === activeTextLayerId) || selectedLayers[0]
+  const hasSelection = selectedLayers.length > 0 || activeLayer
 
-  if (textLayers.length === 0) {
-    return (
-      <div className={`p-4 ${className}`}>
-        <p className="text-sm text-surface-500 text-center py-8">
-          点击左侧"添加文字"按钮创建文字图层
-        </p>
-      </div>
+  // 批量更新选中的文字图层，并同步到其他画布
+  const updateSelectedLayers = (updates) => {
+    const idsToUpdate = selectedInCurrentCanvas.length > 0 
+      ? selectedInCurrentCanvas 
+      : (activeTextLayerId && currentCanvasTextIds.includes(activeTextLayerId) ? [activeTextLayerId] : [])
+    
+    if (idsToUpdate.length === 0) return
+    
+    // 更新当前画布
+    const newTextLayers = textLayers.map(t => 
+      idsToUpdate.includes(t.id) ? { ...t, ...updates } : t
     )
+    updateCanvas(activeCanvasIndex, { textLayers: newTextLayers })
+    
+    // 如果是 Master 画布，始终同步样式到所有 Slave
+    if (isMaster) {
+      idsToUpdate.forEach(id => {
+        const layerIndex = textLayers.findIndex(t => t.id === id)
+        if (layerIndex >= 0) {
+          syncToSlaves('textLayer.style', { layerIndex, style: updates })
+        }
+      })
+    }
   }
 
   const handleFontSizeChange = (e) => {
     const size = clampFontSize(parseInt(e.target.value, 10))
-    if (hasMultipleSelected) {
-      updateSelectedTextLayers({ fontSize: size })
-    } else if (activeLayer) {
-      updateTextLayer(activeLayer.id, { fontSize: size })
-    }
+    updateSelectedLayers({ fontSize: size })
   }
 
   const handlePropertyChange = (property, value) => {
-    if (hasMultipleSelected) {
-      updateSelectedTextLayers({ [property]: value })
-    } else if (activeLayer) {
-      updateTextLayer(activeLayer.id, { [property]: value })
-    }
+    updateSelectedLayers({ [property]: value })
+  }
+
+  const handleDeleteSelected = () => {
+    const idsToDelete = selectedInCurrentCanvas.length > 0 
+      ? selectedInCurrentCanvas 
+      : (activeTextLayerId && currentCanvasTextIds.includes(activeTextLayerId) ? [activeTextLayerId] : [])
+    
+    const newTextLayers = textLayers.filter(t => !idsToDelete.includes(t.id))
+    updateCanvas(activeCanvasIndex, { textLayers: newTextLayers })
   }
 
   return (
@@ -82,55 +101,69 @@ export default function TextEditor({ className = '' }) {
       {/* 图层列表 */}
       <div>
         <label className="text-sm font-medium text-surface-700 mb-2 block">
-          文字图层 <span className="text-surface-400 font-normal">(Shift+点击多选)</span>
+          文字图层 
+          <span className="text-surface-400 font-normal ml-1">(Shift+点击多选)</span>
         </label>
-        <div className="space-y-1">
-          {textLayers.map((layer, index) => {
-            const isActive = activeTextLayerId === layer.id
-            const isSelected = selectedTextLayerIds.includes(layer.id)
-            return (
-            <div
-              key={layer.id}
-              onClick={(e) => toggleTextLayerSelection(layer.id, e.shiftKey)}
-              className={`
-                flex items-center gap-2 p-2 rounded-lg cursor-pointer
-                ${isActive 
-                  ? 'bg-primary-50 border border-primary-200' 
-                  : isSelected
-                    ? 'bg-primary-25 border border-primary-100'
-                    : 'hover:bg-surface-50 border border-transparent'
-                }
-              `}
-            >
-              <span className="flex-1 text-sm truncate">
-                {layer.text || `文字 ${index + 1}`}
-              </span>
-              <IconButton
-                size="sm"
-                variant="ghost"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  removeTextLayer(layer.id)
-                }}
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-              </IconButton>
-            </div>
-          )})}
-        </div>
+        
+        {textLayers.length === 0 ? (
+          <p className="text-sm text-surface-500 py-4 text-center bg-surface-50 rounded-lg">
+            点击左侧"添加文字"创建文字图层
+          </p>
+        ) : (
+          <div className="space-y-1 max-h-40 overflow-y-auto">
+            {textLayers.map((layer, index) => {
+              const isActive = activeTextLayerId === layer.id
+              const isSelected = selectedInCurrentCanvas.includes(layer.id)
+              return (
+                <div
+                  key={layer.id}
+                  onClick={(e) => toggleTextLayerSelection(layer.id, e.shiftKey)}
+                  className={`
+                    flex items-center gap-2 p-2 rounded-lg cursor-pointer
+                    ${isActive 
+                      ? 'bg-primary-100 border border-primary-300' 
+                      : isSelected
+                        ? 'bg-primary-50 border border-primary-200'
+                        : 'hover:bg-surface-50 border border-transparent'
+                    }
+                  `}
+                >
+                  <div 
+                    className="w-3 h-3 rounded-full flex-shrink-0"
+                    style={{ backgroundColor: layer.color }}
+                  />
+                  <span className="flex-1 text-sm truncate">
+                    {layer.text || `文字 ${index + 1}`}
+                  </span>
+                  <IconButton
+                    size="sm"
+                    variant="ghost"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      removeTextLayer(layer.id)
+                    }}
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </IconButton>
+                </div>
+              )
+            })}
+          </div>
+        )}
       </div>
 
-      {activeLayer && (
-        <>
-          {/* 多选提示 */}
-          {hasMultipleSelected && (
-            <div className="bg-primary-50 border border-primary-200 rounded-lg p-2 text-sm text-primary-700">
-              已选中 {selectedTextLayerIds.length} 个文字图层，修改将应用到所有选中项
-            </div>
-          )}
+      {/* 多选提示 */}
+      {selectedInCurrentCanvas.length > 1 && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 text-sm text-blue-700">
+          已选中 {selectedInCurrentCanvas.length} 个文字，修改将应用到所有选中项
+        </div>
+      )}
 
+      {/* 样式编辑 - 有选中时显示 */}
+      {hasSelection && activeLayer && (
+        <>
           {/* 字体选择 */}
           <div>
             <label className="text-sm font-medium text-surface-700 mb-1.5 block">
@@ -155,11 +188,7 @@ export default function TextEditor({ className = '' }) {
               ).map(([category, fonts]) => (
                 <optgroup key={category} label={category}>
                   {fonts.map((font) => (
-                    <option 
-                      key={font.value} 
-                      value={font.value}
-                      style={{ fontFamily: font.value }}
-                    >
+                    <option key={font.value} value={font.value}>
                       {font.label}
                     </option>
                   ))}
@@ -205,7 +234,22 @@ export default function TextEditor({ className = '' }) {
               ))}
             </div>
           </div>
+
+          {/* 删除按钮 */}
+          <button
+            onClick={handleDeleteSelected}
+            className="w-full py-2 text-sm text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+          >
+            删除选中的文字 ({selectedInCurrentCanvas.length || 1})
+          </button>
         </>
+      )}
+
+      {/* 无选中时的提示 */}
+      {!hasSelection && textLayers.length > 0 && (
+        <p className="text-sm text-surface-500 text-center py-4">
+          点击画布上的文字进行编辑
+        </p>
       )}
     </div>
   )

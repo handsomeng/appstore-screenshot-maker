@@ -1,16 +1,26 @@
+/**
+ * [L3] 导出面板
+ * [PROTOCOL]: 变更时更新此头部，然后检查 CLAUDE.md
+ * 
+ * 支持单张导出和批量导出所有画布
+ */
 import { useState } from 'react'
 import { useCanvasStore } from '../../stores/canvasStore'
-import { Button, Input, Slider, Modal } from '../ui'
+import { Button, Input, Slider } from '../ui'
 import { useToast } from '../ui/Toast'
 import { getExportPresetList } from '../../utils/presets'
 import { exportCanvas, downloadImage } from '../../utils/exportUtils'
 
 export default function ExportPanel({ className = '' }) {
-  const { exportSettings, updateExportSettings, screenshots } = useCanvasStore()
+  const { canvases, activeCanvasIndex, exportSettings, updateExportSettings } = useCanvasStore()
   const [isExporting, setIsExporting] = useState(false)
-  const [showExportModal, setShowExportModal] = useState(false)
+  const [exportProgress, setExportProgress] = useState(0)
   const toast = useToast()
   const presets = getExportPresetList()
+  
+  const currentCanvas = canvases[activeCanvasIndex]
+  const hasScreenshot = !!currentCanvas?.screenshot
+  const canvasCount = canvases.filter(c => c.screenshot).length
 
   const handlePresetChange = (e) => {
     const presetId = e.target.value
@@ -26,22 +36,23 @@ export default function ExportPanel({ className = '' }) {
     }
   }
 
-  const handleExport = async () => {
-    if (screenshots.length === 0) {
-      toast.error('请先添加截图')
+  // 导出单张
+  const handleExportSingle = async () => {
+    if (!hasScreenshot) {
+      toast.error('当前画布没有截图')
       return
     }
 
     setIsExporting(true)
     try {
       const dataUrl = await exportCanvas({
-        width: exportSettings.width,
-        height: exportSettings.height,
+        width: currentCanvas.canvasSize.width,
+        height: currentCanvas.canvasSize.height,
         format: exportSettings.format,
         quality: exportSettings.quality,
       })
 
-      const filename = `screenshot_${Date.now()}.${exportSettings.format}`
+      const filename = `screenshot_${activeCanvasIndex + 1}.${exportSettings.format}`
       downloadImage(dataUrl, filename)
       toast.success('导出成功')
     } catch (error) {
@@ -52,57 +63,58 @@ export default function ExportPanel({ className = '' }) {
     }
   }
 
+  // 批量导出所有画布
+  const handleExportAll = async () => {
+    if (canvasCount === 0) {
+      toast.error('没有可导出的画布')
+      return
+    }
+
+    setIsExporting(true)
+    setExportProgress(0)
+    
+    try {
+      const originalIndex = activeCanvasIndex
+      
+      for (let i = 0; i < canvases.length; i++) {
+        const canvas = canvases[i]
+        if (!canvas.screenshot) continue
+        
+        // 切换到目标画布
+        useCanvasStore.getState().setActiveCanvas(i)
+        
+        // 等待渲染
+        await new Promise(resolve => setTimeout(resolve, 100))
+        
+        // 导出
+        const dataUrl = await exportCanvas({
+          width: canvas.canvasSize.width,
+          height: canvas.canvasSize.height,
+          format: exportSettings.format,
+          quality: exportSettings.quality,
+        })
+
+        const filename = `screenshot_${i + 1}.${exportSettings.format}`
+        downloadImage(dataUrl, filename)
+        
+        setExportProgress(((i + 1) / canvasCount) * 100)
+      }
+      
+      // 恢复原来的画布
+      useCanvasStore.getState().setActiveCanvas(originalIndex)
+      
+      toast.success(`成功导出 ${canvasCount} 张图片`)
+    } catch (error) {
+      console.error('Batch export error:', error)
+      toast.error('批量导出失败，请重试')
+    } finally {
+      setIsExporting(false)
+      setExportProgress(0)
+    }
+  }
+
   return (
     <div className={`p-4 space-y-4 ${className}`}>
-      {/* 尺寸预设 */}
-      <div>
-        <label className="text-sm font-medium text-surface-700 mb-1.5 block">
-          导出尺寸
-        </label>
-        <select
-          value={exportSettings.preset}
-          onChange={handlePresetChange}
-          className="
-            w-full px-3 py-2 text-sm
-            bg-white border border-surface-200 rounded-lg
-            focus:outline-none focus:ring-2 focus:ring-primary-500
-          "
-        >
-          {presets.map((preset) => (
-            <option key={preset.id} value={preset.id}>
-              {preset.name} {preset.width > 0 && `(${preset.width}×${preset.height})`}
-            </option>
-          ))}
-        </select>
-        {exportSettings.preset !== 'custom' && (
-          <p className="text-xs text-surface-500 mt-1">
-            {presets.find(p => p.id === exportSettings.preset)?.description}
-          </p>
-        )}
-      </div>
-
-      {/* 自定义尺寸 */}
-      {exportSettings.preset === 'custom' && (
-        <div className="grid grid-cols-2 gap-3">
-          <Input
-            label="宽度"
-            type="number"
-            value={exportSettings.width}
-            min={100}
-            max={4096}
-            onChange={(e) => updateExportSettings({ width: parseInt(e.target.value, 10) || 0 })}
-          />
-          <Input
-            label="高度"
-            type="number"
-            value={exportSettings.height}
-            min={100}
-            max={4096}
-            onChange={(e) => updateExportSettings({ height: parseInt(e.target.value, 10) || 0 })}
-          />
-        </div>
-      )}
-
       {/* 导出格式 */}
       <div>
         <label className="text-sm font-medium text-surface-700 mb-2 block">
@@ -149,41 +161,61 @@ export default function ExportPanel({ className = '' }) {
         />
       )}
 
-      {/* 当前尺寸预览 */}
-      <div className="p-3 bg-surface-50 rounded-lg">
-        <p className="text-xs text-surface-500">导出尺寸</p>
-        <p className="text-lg font-semibold text-surface-900">
-          {exportSettings.width} × {exportSettings.height}
-        </p>
+      {/* 画布信息 */}
+      <div className="p-3 bg-surface-50 rounded-lg space-y-1">
+        <div className="flex justify-between text-sm">
+          <span className="text-surface-500">当前画布尺寸</span>
+          <span className="font-medium">{currentCanvas?.canvasSize.width} × {currentCanvas?.canvasSize.height}</span>
+        </div>
+        <div className="flex justify-between text-sm">
+          <span className="text-surface-500">可导出画布</span>
+          <span className="font-medium">{canvasCount} 张</span>
+        </div>
       </div>
 
+      {/* 导出进度 */}
+      {isExporting && exportProgress > 0 && (
+        <div className="space-y-1">
+          <div className="h-2 bg-surface-200 rounded-full overflow-hidden">
+            <div 
+              className="h-full bg-blue-500 transition-all duration-300"
+              style={{ width: `${exportProgress}%` }}
+            />
+          </div>
+          <p className="text-xs text-surface-500 text-center">
+            导出中... {Math.round(exportProgress)}%
+          </p>
+        </div>
+      )}
+
       {/* 导出按钮 */}
-      <Button
-        className="w-full"
-        onClick={handleExport}
-        disabled={isExporting || screenshots.length === 0}
-      >
-        {isExporting ? (
-          <>
-            <svg className="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-            </svg>
-            导出中...
-          </>
-        ) : (
-          <>
+      <div className="space-y-2">
+        <Button
+          className="w-full"
+          onClick={handleExportSingle}
+          disabled={isExporting || !hasScreenshot}
+        >
+          {isExporting ? '导出中...' : '导出当前画布'}
+        </Button>
+        
+        {canvasCount > 1 && (
+          <Button
+            variant="secondary"
+            className="w-full"
+            onClick={handleExportAll}
+            disabled={isExporting}
+          >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
             </svg>
-            导出图片
-          </>
+            导出全部 ({canvasCount} 张)
+          </Button>
         )}
-      </Button>
+      </div>
 
-      {screenshots.length === 0 && (
+      {!hasScreenshot && (
         <p className="text-xs text-surface-500 text-center">
-          请先上传截图后再导出
+          当前画布没有截图
         </p>
       )}
     </div>
